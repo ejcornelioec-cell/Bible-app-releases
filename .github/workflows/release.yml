@@ -1,0 +1,68 @@
+name: Build & Publish Windows Installer
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Compute version
+        id: version
+        shell: bash
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches package.json version
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VER="${{ steps.version.outputs.version }}"
+          if [ "$TAG" != "$VER" ]; then
+            echo "::error::Tag v$TAG does not match package.json version $VER (electron-builder publishes as v\$VER)"
+            exit 1
+          fi
+          echo "Releasing v$VER"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and publish installer
+        shell: cmd
+        env:
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+        run: npm run electron-publish
+
+      - name: Verify release URLs (public, no auth)
+        shell: bash
+        run: |
+          set -e
+          BASE="https://github.com/ejcornelioec-cell/Bible-app-releases"
+          V="${{ steps.version.outputs.version }}"
+          for u in \
+            "$BASE/releases.atom" \
+            "$BASE/releases/latest" \
+            "$BASE/releases/download/v$V/latest.yml" \
+            "$BASE/releases/download/v$V/Bible-App-Setup-$V.exe"; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$u")
+            echo "$code  $u"
+            test "$code" = "200"
+          done
+          echo "Release v$V is live. Installed apps will auto-update on next 'Check for updates'."
